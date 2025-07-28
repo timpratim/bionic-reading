@@ -5,7 +5,6 @@ A Chrome extension that converts any webpage or PDF text to Bionic Reading forma
 ## Features
 
 - ✅ **Webpage Support**: Works on any website
-- ✅ **PDF Support**: Converts hosted PDFs (like https://nlp.stanford.edu/IR-book/pdf/01bool.pdf)
 - ✅ **Customizable**: Adjust number of bold letters per word (1-4)
 - ✅ **Toggle On/Off**: Easy enable/disable via popup
 - ✅ **Dynamic Content**: Handles SPAs and dynamically loaded content

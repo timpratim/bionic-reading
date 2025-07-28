@@ -28,7 +28,12 @@ class BionicReader {
       } else if (request.action === 'getStatus') {
         sendResponse({ enabled: this.isEnabled });
       } else if (request.action === 'setBoldLetters') {
-        this.boldLetters = request.value;
+        const value = Number(request.value);
+        if (!Number.isInteger(value) || value < 1 || value > 10) {
+          sendResponse({ success: false, error: 'Invalid boldLetters value' });
+          return;
+        }
+        this.boldLetters = value;
         this.saveSettings();
         if (this.isEnabled) {
           this.reapplyBionic();
@@ -66,7 +71,14 @@ class BionicReader {
     try {
       const result = await chrome.storage.sync.get(['boldLetters']);
       this.isEnabled = false; // Always start disabled on new tabs/pages
-      this.boldLetters = result.boldLetters || 2;
+      
+      // Validate stored boldLetters value
+      const storedValue = Number(result.boldLetters);
+      if (Number.isInteger(storedValue) && storedValue >= 1 && storedValue <= 10) {
+        this.boldLetters = storedValue;
+      } else {
+        this.boldLetters = 2; // Default fallback
+      }
     } catch (error) {
       console.log('Using default settings');
       this.isEnabled = false;
@@ -229,10 +241,119 @@ class BionicReader {
     }, 100);
   }
 
-  injectPDFScript() {
-    const script = document.createElement('script');
-    script.src = chrome.runtime.getURL('pdf-handler.js');
-    document.head.appendChild(script);
+  async injectPDFScript() {
+    try {
+      // Get the PDF handler code and execute it in main world
+      const pdfHandlerCode = this.getPDFHandlerCode();
+      
+      await chrome.scripting.executeScript({
+        target: { tabId: await this.getCurrentTabId() },
+        world: 'MAIN',
+        func: pdfHandlerCode
+      });
+    } catch (error) {
+      console.log('Could not inject PDF handler:', error);
+    }
+  }
+  
+  async getCurrentTabId() {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    return tabs[0]?.id;
+  }
+  
+  getPDFHandlerCode() {
+    return function() {
+      // Defensive snapshots against prototype pollution
+      const createElement = document.createElement.bind(document);
+      const createTextNode = document.createTextNode.bind(document);
+      const createDocumentFragment = document.createDocumentFragment.bind(document);
+      const forEach = Array.prototype.forEach.bind(Array.prototype);
+      
+      function waitForPDFJS() {
+        if (window.pdfjsLib || window.PDFViewerApplication) {
+          initializePDFHandler();
+        } else {
+          setTimeout(waitForPDFJS, 100);
+        }
+      }
+      
+      function initializePDFHandler() {
+        if (window.PDFViewerApplication && window.PDFViewerApplication.eventBus) {
+          window.PDFViewerApplication.eventBus.on('textlayerrendered', function(evt) {
+            setTimeout(() => {
+              processPDFTextLayer(evt.source.textLayerDiv);
+            }, 100);
+          });
+        }
+        
+        setTimeout(() => {
+          const textLayers = document.querySelectorAll('.textLayer');
+          forEach.call(textLayers, processPDFTextLayer);
+        }, 1000);
+      }
+      
+      function processPDFTextLayer(textLayerDiv) {
+        if (!textLayerDiv || textLayerDiv.dataset.bionicProcessed) return;
+        
+        const spans = textLayerDiv.querySelectorAll('span');
+        forEach.call(spans, span => {
+          if (span.textContent && span.textContent.trim()) {
+            const originalText = span.textContent;
+            const bionicFragment = convertToBionic(originalText);
+            span.textContent = '';
+            span.appendChild(bionicFragment);
+          }
+        });
+        
+        textLayerDiv.dataset.bionicProcessed = 'true';
+      }
+      
+      function convertToBionic(text) {
+        const parts = text.split(/(\s+)/);
+        const fragment = createDocumentFragment();
+        
+        forEach.call(parts, part => {
+          if (/\s/.test(part)) {
+            fragment.appendChild(createTextNode(part));
+          } else if (/\b\w+\b/.test(part)) {
+            const wordElement = createBionicWord(part);
+            fragment.appendChild(wordElement);
+          } else {
+            fragment.appendChild(createTextNode(part));
+          }
+        });
+        
+        return fragment;
+      }
+      
+      function createBionicWord(word) {
+        if (word.length <= 1) {
+          return createTextNode(word);
+        }
+        
+        const boldCount = Math.min(2, Math.ceil(word.length / 2));
+        const boldPart = word.substring(0, boldCount);
+        const normalPart = word.substring(boldCount);
+        
+        const wordSpan = createElement('span');
+        wordSpan.className = 'bionic-word';
+        
+        const boldSpan = createElement('span');
+        boldSpan.className = 'bionic-bold';
+        boldSpan.textContent = boldPart;
+        
+        const normalSpan = createElement('span');
+        normalSpan.className = 'bionic-normal';
+        normalSpan.textContent = normalPart;
+        
+        wordSpan.appendChild(boldSpan);
+        wordSpan.appendChild(normalSpan);
+        
+        return wordSpan;
+      }
+      
+      waitForPDFJS();
+    };
   }
 
   processTextNodes() {
@@ -380,8 +501,23 @@ class BionicReader {
   startObserving() {
     // Throttle mutation processing to improve performance
     let mutationTimeout;
+    let processingStartTime = 0;
+    let processingBudget = 50; // Max 50ms per second
+    let lastSecond = Math.floor(Date.now() / 1000);
+    let timeSpentThisSecond = 0;
     
     this.observer = new MutationObserver((mutations) => {
+      // Rate limiting check
+      const currentSecond = Math.floor(Date.now() / 1000);
+      if (currentSecond !== lastSecond) {
+        lastSecond = currentSecond;
+        timeSpentThisSecond = 0;
+      }
+      
+      if (timeSpentThisSecond >= processingBudget) {
+        return; // Skip processing if budget exceeded
+      }
+      
       // Clear previous timeout
       if (mutationTimeout) {
         clearTimeout(mutationTimeout);
@@ -389,6 +525,7 @@ class BionicReader {
       
       // Throttle mutations to avoid excessive processing during scrolling
       mutationTimeout = setTimeout(() => {
+        processingStartTime = performance.now();
         const nodesToProcess = [];
         
         mutations.forEach((mutation) => {
@@ -414,6 +551,10 @@ class BionicReader {
         
         // Process nodes in small batches
         this.processBatchedNodes(nodesToProcess);
+        
+        // Update time budget tracking
+        const processingTime = performance.now() - processingStartTime;
+        timeSpentThisSecond += processingTime;
       }, 200); // Wait 200ms before processing mutations
     });
 

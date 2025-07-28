@@ -6,7 +6,8 @@
   
   "permissions": [
     "activeTab",
-    "storage"
+    "storage",
+    "scripting"
   ],
   
   "host_permissions": [
@@ -16,7 +17,7 @@
   
   "content_scripts": [
     {
-      "matches": ["<all_urls>"],
+      "matches": ["https://*/*", "http://*/*"],
       "js": ["content.js"],
       "css": ["bionic.css"],
       "run_at": "document_end"
@@ -28,10 +29,7 @@
     "default_title": "Toggle Bionic Reading"
   },
   
-  "web_accessible_resources": [
-    {
-      "resources": ["pdf-handler.js"],
-      "matches": ["<all_urls>"]
-    }
-  ]
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
+  }
 }

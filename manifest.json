@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "Bionic Reading Converter",
+  "version": "1.0.0",
+  "description": "Convert any webpage or PDF text to Bionic Reading format for improved reading speed and comprehension",
+  
+  "permissions": [
+    "activeTab",
+    "storage",
+    "scripting"
+  ],
+  
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["bionic.css"],
+      "run_at": "document_end"
+    }
+  ],
+  
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Toggle Bionic Reading"
+  },
+  
+  "web_accessible_resources": [
+    {
+      "resources": ["pdf-handler.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

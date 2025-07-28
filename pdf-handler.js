@@ -37,7 +37,9 @@
     spans.forEach(span => {
       if (span.textContent && span.textContent.trim()) {
         const originalText = span.textContent;
-        span.innerHTML = convertToBionic(originalText);
+        const bionicFragment = convertToBionic(originalText);
+        span.textContent = '';
+        span.appendChild(bionicFragment);
       }
     });
     
@@ -45,15 +47,51 @@
   }
   
   function convertToBionic(text) {
-    return text.replace(/\b\w+\b/g, (word) => {
-      if (word.length <= 1) return word;
-      
-      const boldCount = Math.min(2, Math.ceil(word.length / 2));
-      const boldPart = word.substring(0, boldCount);
-      const normalPart = word.substring(boldCount);
-      
-      return `<span class="bionic-word"><span class="bionic-bold">${boldPart}</span><span class="bionic-normal">${normalPart}</span></span>`;
+    // Split text into words and spaces to preserve formatting
+    const parts = text.split(/(\s+)/);
+    const fragment = document.createDocumentFragment();
+    
+    parts.forEach(part => {
+      if (/\s/.test(part)) {
+        // Preserve whitespace as text node
+        fragment.appendChild(document.createTextNode(part));
+      } else if (/\b\w+\b/.test(part)) {
+        // Process word
+        const wordElement = createBionicWord(part);
+        fragment.appendChild(wordElement);
+      } else {
+        // Preserve non-word content as text node
+        fragment.appendChild(document.createTextNode(part));
+      }
     });
+    
+    return fragment;
+  }
+  
+  function createBionicWord(word) {
+    if (word.length <= 1) {
+      return document.createTextNode(word);
+    }
+    
+    const boldCount = Math.min(2, Math.ceil(word.length / 2));
+    const boldPart = word.substring(0, boldCount);
+    const normalPart = word.substring(boldCount);
+    
+    const wordSpan = document.createElement('span');
+    wordSpan.className = 'bionic-word';
+    
+    const boldSpan = document.createElement('span');
+    boldSpan.className = 'bionic-bold';
+    boldSpan.textContent = boldPart;
+    
+    const normalSpan = document.createElement('span');
+    normalSpan.className = 'bionic-normal';
+    normalSpan.textContent = normalPart;
+    
+    wordSpan.appendChild(boldSpan);
+    wordSpan.appendChild(normalSpan);
+    
+    return wordSpan;
   }
   
   // Start the process

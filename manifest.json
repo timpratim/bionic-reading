@@ -6,12 +6,12 @@
   
   "permissions": [
     "activeTab",
-    "storage",
-    "scripting"
+    "storage"
   ],
   
   "host_permissions": [
-    "<all_urls>"
+    "https://*/*",
+    "http://*/*"
   ],
   
   "content_scripts": [

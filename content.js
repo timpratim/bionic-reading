@@ -8,6 +8,7 @@ class BionicReader {
     this.isPDF = false;
     this.processingTimeout = null;
     this.processedElements = new Set(); // Track processed elements to avoid reprocessing
+    this.maxMapSize = 10000; // Limit map size to prevent memory issues
     
     this.init();
   }
@@ -36,10 +37,8 @@ class BionicReader {
       }
     });
 
-    // Auto-enable if setting is on
-    if (this.isEnabled) {
-      this.enable();
-    }
+    // Extension always starts disabled on new tabs/pages
+    // User must manually enable it each time
   }
 
   detectPDF() {
@@ -65,18 +64,19 @@ class BionicReader {
 
   async loadSettings() {
     try {
-      const result = await chrome.storage.sync.get(['bionicEnabled', 'boldLetters']);
-      this.isEnabled = result.bionicEnabled || false;
+      const result = await chrome.storage.sync.get(['boldLetters']);
+      this.isEnabled = false; // Always start disabled on new tabs/pages
       this.boldLetters = result.boldLetters || 2;
     } catch (error) {
       console.log('Using default settings');
+      this.isEnabled = false;
+      this.boldLetters = 2;
     }
   }
 
   async saveSettings() {
     try {
       await chrome.storage.sync.set({
-        bionicEnabled: this.isEnabled,
         boldLetters: this.boldLetters
       });
     } catch (error) {
@@ -272,25 +272,36 @@ class BionicReader {
   }
 
   processTextNode(textNode) {
-    const parent = textNode.parentElement;
-    if (!parent || parent.classList.contains('bionic-word')) return;
-
-    const originalText = textNode.textContent;
-    this.originalTexts.set(textNode, originalText);
-
-    const bionicHTML = this.convertToBionic(originalText);
-    
-    // Create a temporary container
-    const temp = document.createElement('div');
-    temp.innerHTML = bionicHTML;
-    
-    // Replace the text node with bionic spans
-    const fragment = document.createDocumentFragment();
-    while (temp.firstChild) {
-      fragment.appendChild(temp.firstChild);
+    // Skip if not a text node or if parent is not suitable
+    if (!textNode || textNode.nodeType !== Node.TEXT_NODE) {
+      return;
     }
     
-    parent.replaceChild(fragment, textNode);
+    const parent = textNode.parentElement;
+    if (!parent) return;
+    
+    // Skip script, style, and other non-visible elements
+    const tagName = parent.tagName.toLowerCase();
+    if (['script', 'style', 'noscript', 'textarea', 'input'].includes(tagName)) {
+      return;
+    }
+    
+    // Skip if text is empty or only whitespace
+    const text = textNode.textContent.trim();
+    if (!text || text.length < 3) {
+      return;
+    }
+    
+    // Check map size limit to prevent memory issues
+    if (this.originalTexts.size >= this.maxMapSize) {
+      this.cleanupOldEntries();
+    }
+    
+    // Store original text and process
+    this.originalTexts.set(textNode, textNode.textContent);
+    
+    const bionicFragment = this.convertToBionic(text);
+    parent.replaceChild(bionicFragment, textNode);
   }
 
   processSingleTextNode(element) {
@@ -302,24 +313,68 @@ class BionicReader {
       return;
     }
     
+    // Check map size limit to prevent memory issues
+    if (this.originalTexts.size >= this.maxMapSize) {
+      this.cleanupOldEntries();
+    }
+    
     const originalText = element.textContent;
     this.originalTexts.set(element, originalText);
     this.processedElements.add(element);
     
-    element.innerHTML = this.convertToBionic(originalText);
+    // Clear existing content and append bionic fragment
+    element.textContent = '';
+    const bionicFragment = this.convertToBionic(originalText);
+    element.appendChild(bionicFragment);
     element.classList.add('bionic-processed');
   }
 
   convertToBionic(text) {
-    return text.replace(/\b\w+\b/g, (word) => {
-      if (word.length <= 1) return word;
-      
-      const boldCount = Math.min(this.boldLetters, Math.ceil(word.length / 2));
-      const boldPart = word.substring(0, boldCount);
-      const normalPart = word.substring(boldCount);
-      
-      return `<span class="bionic-word"><span class="bionic-bold">${boldPart}</span><span class="bionic-normal">${normalPart}</span></span>`;
+    // Split text into words and spaces to preserve formatting
+    const parts = text.split(/(\s+)/);
+    const fragment = document.createDocumentFragment();
+    
+    parts.forEach(part => {
+      if (/\s/.test(part)) {
+        // Preserve whitespace as text node
+        fragment.appendChild(document.createTextNode(part));
+      } else if (/\b\w+\b/.test(part)) {
+        // Process word
+        const wordElement = this.createBionicWord(part);
+        fragment.appendChild(wordElement);
+      } else {
+        // Preserve non-word content as text node
+        fragment.appendChild(document.createTextNode(part));
+      }
     });
+    
+    return fragment;
+  }
+  
+  createBionicWord(word) {
+    if (word.length <= 1) {
+      return document.createTextNode(word);
+    }
+    
+    const boldCount = Math.min(this.boldLetters, Math.ceil(word.length / 2));
+    const boldPart = word.substring(0, boldCount);
+    const normalPart = word.substring(boldCount);
+    
+    const wordSpan = document.createElement('span');
+    wordSpan.className = 'bionic-word';
+    
+    const boldSpan = document.createElement('span');
+    boldSpan.className = 'bionic-bold';
+    boldSpan.textContent = boldPart;
+    
+    const normalSpan = document.createElement('span');
+    normalSpan.className = 'bionic-normal';
+    normalSpan.textContent = normalPart;
+    
+    wordSpan.appendChild(boldSpan);
+    wordSpan.appendChild(normalSpan);
+    
+    return wordSpan;
   }
 
   startObserving() {
@@ -398,6 +453,33 @@ class BionicReader {
     }
   }
 
+  cleanupOldEntries() {
+    // Remove entries for elements that are no longer in the DOM
+    const keysToDelete = [];
+    
+    for (const [element] of this.originalTexts) {
+      if (!document.contains(element)) {
+        keysToDelete.push(element);
+      }
+    }
+    
+    keysToDelete.forEach(key => {
+      this.originalTexts.delete(key);
+      this.processedElements.delete(key);
+    });
+    
+    // If still too large, remove oldest entries (first half)
+    if (this.originalTexts.size >= this.maxMapSize) {
+      const entries = Array.from(this.originalTexts.entries());
+      const toRemove = entries.slice(0, Math.floor(entries.length / 2));
+      
+      toRemove.forEach(([element]) => {
+        this.originalTexts.delete(element);
+        this.processedElements.delete(element);
+      });
+    }
+  }
+
   restoreOriginalText() {
     // Remove all bionic formatting
     const bionicElements = document.querySelectorAll('.bionic-word');
@@ -418,6 +500,7 @@ class BionicReader {
     });
 
     this.originalTexts.clear();
+    this.processedElements.clear();
   }
 }
 
